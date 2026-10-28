@@ -1,0 +1,57 @@
+name: Native Rust build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxinerama-dev libxxf86vm-dev libegl1-mesa-dev libgl1-mesa-dev
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxinerama-dev libxxf86vm-dev libegl1-mesa-dev libgl1-mesa-dev
+      - run: cargo build --release --locked
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp target/release/wanderdesk dist/wanderdesk-linux-${{ matrix.arch }}
+          chmod +x dist/wanderdesk-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wanderdesk-linux-${{ matrix.arch }}
+          path: dist/wanderdesk-linux-${{ matrix.arch }}
+          if-no-files-found: error
