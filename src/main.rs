@@ -1,451 +1,95 @@
 mod catalog;
 mod settings;
 
+use bevy::{input::mouse::MouseMotion, prelude::*, window::{CursorGrabMode, PrimaryWindow}};
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use catalog::{discover_apps, launch_app, AppEntry};
-use eframe::egui::{self, Color32, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use settings::Settings;
-use std::time::{Duration, Instant};
 
-struct WanderDesk {
-    apps: Vec<AppEntry>,
-    settings: Settings,
-    saved_settings: Settings,
-    menu: bool,
-    search: String,
-    position: [f32; 2],
-    angle: f32,
-    arm: Vec<usize>,
-    selected: Option<usize>,
-    notice: String,
-    last_save: Instant,
+#[derive(Resource)]
+struct DesktopState {
+    apps: Vec<AppEntry>, settings: Settings, menu: bool, search: String,
+    notice: String, yaw: f32, pitch: f32,
 }
+#[derive(Component)] struct PlayerCamera;
 
-impl WanderDesk {
-    fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        Self {
-            apps: discover_apps(),
-            saved_settings: settings.clone(),
-            settings,
-            menu: true,
-            search: String::new(),
-            position: [0.0, 0.0],
-            angle: 0.0,
-            arm: Vec::new(),
-            selected: None,
-            notice: "ZQSD/WASD : bouger · ← → : tourner · E : attacher · Entrée/F : ouvrir".into(),
-            last_save: Instant::now(),
-        }
-    }
-
-    fn world_position(i: usize) -> [f32; 2] {
-        [
-            ((i * 37 + 13) % 79) as f32 - 39.0,
-            ((i * 53 + 29) % 83) as f32 - 41.0,
-        ]
-    }
-
-    fn project(&self, world: [f32; 2], rect: Rect) -> Option<(Pos2, f32, f32)> {
-        let dx = world[0] - self.position[0];
-        let dy = world[1] - self.position[1];
-        let forward = dx * self.angle.sin() + dy * self.angle.cos();
-        if forward <= 0.5 {
-            return None;
-        }
-        let side = dx * self.angle.cos() - dy * self.angle.sin();
-        let scale = (rect.height() * 0.8 / forward).min(24.0);
-        Some((
-            Pos2::new(
-                rect.center().x + side * scale,
-                rect.center().y + scale * 0.30,
-            ),
-            scale,
-            forward,
-        ))
-    }
-
-    fn toggle_arm(&mut self) {
-        if let Some(i) = self.selected {
-            if let Some(slot) = self.arm.iter().position(|n| *n == i) {
-                self.arm.remove(slot);
-                self.notice = format!("{} détachée", self.apps[i].name);
-            } else {
-                self.arm.push(i);
-                self.notice = format!("{} attachée au bras", self.apps[i].name);
-            }
-        }
-    }
-
-    fn launch_index(&mut self, index: usize) {
-        if let Some(app) = self.apps.get(index) {
-            self.notice = match launch_app(app) {
-                Ok(()) => format!("Lancement : {}", app.name),
-                Err(e) => e,
-            };
-        }
-    }
-
-    fn movement(&mut self, ctx: &egui::Context) {
-        if self.menu {
-            return;
-        }
-        let (forward, back, left, right, tl, tr, attach, launch, escape) = ctx.input(|i| {
-            (
-                i.key_down(Key::W) || i.key_down(Key::Z) || i.key_down(Key::ArrowUp),
-                i.key_down(Key::S) || i.key_down(Key::ArrowDown),
-                i.key_down(Key::A) || i.key_down(Key::Q),
-                i.key_down(Key::D),
-                i.key_down(Key::ArrowLeft),
-                i.key_down(Key::ArrowRight),
-                i.key_pressed(Key::E),
-                i.key_pressed(Key::Enter) || i.key_pressed(Key::F),
-                i.key_pressed(Key::Escape),
-            )
-        });
-        let speed = self.settings.speed * 0.07;
-        if forward {
-            self.position[0] += self.angle.sin() * speed;
-            self.position[1] += self.angle.cos() * speed;
-        }
-        if back {
-            self.position[0] -= self.angle.sin() * speed;
-            self.position[1] -= self.angle.cos() * speed;
-        }
-        if left {
-            self.position[0] -= self.angle.cos() * speed;
-            self.position[1] += self.angle.sin() * speed;
-        }
-        if right {
-            self.position[0] += self.angle.cos() * speed;
-            self.position[1] -= self.angle.sin() * speed;
-        }
-        if tl {
-            self.angle -= 0.035;
-        }
-        if tr {
-            self.angle += 0.035;
-        }
-        if escape {
-            self.menu = true;
-        }
-        if attach {
-            self.toggle_arm();
-        }
-        if launch {
-            if let Some(i) = self.selected {
-                self.launch_index(i);
-            }
-        }
-        for digit in 1..=9 {
-            let key = [
-                Key::Num1,
-                Key::Num2,
-                Key::Num3,
-                Key::Num4,
-                Key::Num5,
-                Key::Num6,
-                Key::Num7,
-                Key::Num8,
-                Key::Num9,
-            ][digit - 1];
-            if ctx.input(|i| i.key_pressed(key)) {
-                if let Some(index) = self.arm.get(digit - 1).copied() {
-                    self.launch_index(index);
-                }
-            }
-        }
-        if let Some((distance, index)) = self
-            .apps
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                let p = Self::world_position(i);
-                (
-                    ((p[0] - self.position[0]).powi(2) + (p[1] - self.position[1]).powi(2)).sqrt(),
-                    i,
-                )
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-        {
-            if distance < 4.5 {
-                self.selected = Some(index);
-            }
-        }
-    }
-
-    fn draw_world(&mut self, ui: &mut egui::Ui) {
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(8, 14, 29));
-        let horizon = rect.top() + rect.height() * 0.53;
-        painter.rect_filled(
-            Rect::from_min_max(rect.min, Pos2::new(rect.right(), horizon)),
-            0.0,
-            Color32::from_rgb(17, 34, 67),
-        );
-        painter.rect_filled(
-            Rect::from_min_max(Pos2::new(rect.left(), horizon), rect.max),
-            0.0,
-            Color32::from_rgb(13, 29, 40),
-        );
-        let grid = Color32::from_rgba_unmultiplied(54, 137, 158, 65);
-        for n in (-30..=30).step_by(2) {
-            for (a, b) in [
-                ([n as f32, -50.0], [n as f32, 50.0]),
-                ([-50.0, n as f32], [50.0, n as f32]),
-            ] {
-                if let (Some((pa, _, _)), Some((pb, _, _))) =
-                    (self.project(a, rect), self.project(b, rect))
-                {
-                    painter.line_segment([pa, pb], Stroke::new(1.0_f32, grid));
-                }
-            }
-        }
-        let query = self.search.to_lowercase();
-        let mut visible: Vec<_> = self
-            .apps
-            .iter()
-            .enumerate()
-            .filter(|(_, app)| query.is_empty() || app.name.to_lowercase().contains(&query))
-            .filter_map(|(i, _)| {
-                let (p, s, d) = self.project(Self::world_position(i), rect)?;
-                (d < 70.0 && rect.expand(120.0).contains(p)).then_some((d, i, p, s))
-            })
-            .collect();
-        visible.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, i, center, scale) in visible {
-            let size = (scale * 0.92).clamp(30.0, 110.0);
-            let card = Rect::from_center_size(
-                center + Vec2::new(0.0, -size * 0.25),
-                Vec2::new(size * 1.5, size * 0.78),
-            );
-            let active = self.selected == Some(i);
-            painter.rect_filled(
-                card,
-                8.0,
-                if active {
-                    Color32::from_rgb(30, 91, 103)
-                } else {
-                    Color32::from_rgb(22, 48, 70)
-                },
-            );
-            painter.rect_stroke(
-                card,
-                8.0,
-                Stroke::new(
-                    if active { 2.5_f32 } else { 1.2_f32 },
-                    if active {
-                        Color32::from_rgb(112, 247, 240)
-                    } else {
-                        Color32::from_rgb(66, 126, 177)
-                    },
-                ),
-            );
-            painter.text(
-                card.center(),
-                egui::Align2::CENTER_CENTER,
-                &self.apps[i].name,
-                FontId::proportional((size * 0.15).clamp(9.0, 15.0)),
-                Color32::from_rgb(229, 250, 255),
-            );
-            if response.clicked()
-                && card.contains(response.interact_pointer_pos().unwrap_or(Pos2::ZERO))
-            {
-                self.selected = Some(i);
-            }
-        }
-        let c = rect.center();
-        painter.line_segment(
-            [c - Vec2::new(8.0, 0.0), c + Vec2::new(8.0, 0.0)],
-            Stroke::new(2.0_f32, Color32::WHITE),
-        );
-        painter.line_segment(
-            [c - Vec2::new(0.0, 8.0), c + Vec2::new(0.0, 8.0)],
-            Stroke::new(2.0_f32, Color32::WHITE),
-        );
-        painter.text(
-            rect.left_top() + Vec2::new(16.0, 14.0),
-            egui::Align2::LEFT_TOP,
-            format!("WANDERDESK // {} applications", self.apps.len()),
-            FontId::proportional(14.0),
-            Color32::WHITE,
-        );
-        painter.text(
-            rect.left_bottom() + Vec2::new(16.0, -16.0),
-            egui::Align2::LEFT_BOTTOM,
-            &self.notice,
-            FontId::proportional(12.0),
-            Color32::from_rgb(196, 233, 242),
-        );
-    }
-}
-
-impl eframe::App for WanderDesk {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.movement(ctx);
-        if self.settings != self.saved_settings
-            && self.last_save.elapsed() >= Duration::from_millis(500)
-        {
-            match self.settings.save() {
-                Ok(()) => self.saved_settings = self.settings.clone(),
-                Err(e) => self.notice = format!("Paramètres non sauvegardés : {e}"),
-            }
-            self.last_save = Instant::now();
-        }
-        if self.menu {
-            egui::CentralPanel::default().show(ctx,|ui| {
-                ui.add_space(42.0);
-                ui.heading(RichText::new("WANDERDESK").size(42.0).strong().color(Color32::from_rgb(112,247,240)));
-                ui.label("Ton bureau est un monde. Explore et lance tes applications Linux.");
-                ui.add_space(24.0); ui.heading("Paramètres de session");
-                ui.checkbox(&mut self.settings.stereo,"Vue stéréoscopique expérimentale (pas encore OpenXR)");
-                ui.add(egui::Slider::new(&mut self.settings.speed,1.0..=15.0).text("Vitesse de déplacement"));
-                if ui.checkbox(&mut self.settings.fullscreen,"Plein écran").changed() { ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.settings.fullscreen)); }
-                ui.label(format!("{} applications détectées",self.apps.len()));
-                if ui.button(RichText::new("▶  JOUER").size(24.0)).clicked() { self.menu=false; }
-                if ui.button("Actualiser le catalogue").clicked() { self.apps=discover_apps(); }
-                ui.add_space(10.0);
-                ui.label("ZQSD/WASD : bouger · ← → : tourner · E : attacher · Entrée/F : lancer · Échap : menu");
-                ui.label(RichText::new("Binaire natif Linux — Rust + egui — x86-64 et ARM64").weak());
-            });
-        } else {
-            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("WANDERDESK")
-                            .strong()
-                            .color(Color32::from_rgb(112, 247, 240)),
-                    );
-                    ui.separator();
-                    ui.label(format!("{} apps", self.apps.len()));
-                    ui.add_sized(
-                        [180.0, 24.0],
-                        egui::TextEdit::singleline(&mut self.search).hint_text("Rechercher…"),
-                    );
-                    if ui.button("Menu").clicked() {
-                        self.menu = true;
-                    }
-                    if ui.button("Actualiser").clicked() {
-                        self.apps = discover_apps();
-                    }
-                });
-            });
-            egui::SidePanel::right("arm")
-                .default_width(205.0)
-                .show(ctx, |ui| {
-                    ui.heading("◈ Bras / raccourcis");
-                    ui.label("Touches 1–9 pour lancer");
-                    ui.separator();
-                    let mut remove = None;
-                    let mut launch = None;
-                    let arm_snapshot = self.arm.clone();
-                    for (slot, index) in arm_snapshot.iter().enumerate() {
-                        if let Some(app) = self.apps.get(*index) {
-                            ui.horizontal(|ui| {
-                                if ui.small_button(format!("{} ×", slot + 1)).clicked() {
-                                    remove = Some(slot);
-                                }
-                                if ui.button(&app.name).clicked() {
-                                    launch = Some(*index);
-                                }
-                            });
-                        }
-                    }
-                    if let Some(slot) = remove {
-                        self.arm.remove(slot);
-                    }
-                    if let Some(index) = launch {
-                        self.launch_index(index);
-                    }
-                    ui.separator();
-                    if let Some(i) = self.selected {
-                        if let Some(app) = self.apps.get(i) {
-                            ui.label(RichText::new(&app.name).strong());
-                            if let Some(icon) = &app.icon {
-                                ui.label(format!("Icône : {icon}"));
-                            }
-                            if ui.button("Lancer l’application").clicked() {
-                                self.launch_index(i);
-                            }
-                            if ui
-                                .button(if self.arm.contains(&i) {
-                                    "Détacher du bras"
-                                } else {
-                                    "Attacher au bras"
-                                })
-                                .clicked()
-                            {
-                                self.toggle_arm();
-                            }
-                        }
-                    }
-                });
-            egui::TopBottomPanel::bottom("touch_controls").show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let step = self.settings.speed * 0.8;
-                    if ui.add_sized([48.0, 38.0], egui::Button::new("◀")).clicked() {
-                        self.position[0] -= self.angle.cos() * step;
-                        self.position[1] += self.angle.sin() * step;
-                    }
-                    if ui.add_sized([48.0, 38.0], egui::Button::new("▲")).clicked() {
-                        self.position[0] += self.angle.sin() * step;
-                        self.position[1] += self.angle.cos() * step;
-                    }
-                    if ui.add_sized([48.0, 38.0], egui::Button::new("▼")).clicked() {
-                        self.position[0] -= self.angle.sin() * step;
-                        self.position[1] -= self.angle.cos() * step;
-                    }
-                    if ui.add_sized([48.0, 38.0], egui::Button::new("▶")).clicked() {
-                        self.position[0] += self.angle.cos() * step;
-                        self.position[1] -= self.angle.sin() * step;
-                    }
-                    ui.separator();
-                    if ui
-                        .add_sized([54.0, 38.0], egui::Button::new("↶ Tourner"))
-                        .clicked()
-                    {
-                        self.angle -= 0.25;
-                    }
-                    if ui
-                        .add_sized([54.0, 38.0], egui::Button::new("Tourner ↷"))
-                        .clicked()
-                    {
-                        self.angle += 0.25;
-                    }
-                    if ui
-                        .add_sized([70.0, 38.0], egui::Button::new("E · Attacher"))
-                        .clicked()
-                    {
-                        self.toggle_arm();
-                    }
-                    if ui
-                        .add_sized([70.0, 38.0], egui::Button::new("F · Ouvrir"))
-                        .clicked()
-                    {
-                        if let Some(i) = self.selected {
-                            self.launch_index(i);
-                        }
-                    }
-                });
-            });
-            egui::CentralPanel::default().show(ctx, |ui| self.draw_world(ui));
-        }
-        ctx.request_repaint_after(Duration::from_millis(16));
-    }
-}
-
-fn main() -> eframe::Result<()> {
+fn main() {
     let settings = Settings::load();
-    let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1280.0, 800.0])
-        .with_min_inner_size([800.0, 520.0])
-        .with_fullscreen(settings.fullscreen);
-    eframe::run_native(
-        "WanderDesk",
-        eframe::NativeOptions {
-            viewport,
-            ..Default::default()
-        },
-        Box::new(move |cc| Box::new(WanderDesk::new(cc, settings))),
-    )
+    App::new()
+        .insert_resource(ClearColor(Color::rgb(0.008, 0.016, 0.04)))
+        .insert_resource(DesktopState { apps: discover_apps(), settings, menu: true, search: String::new(), notice: "ZQSD/WASD : bouger · souris : regarder · E : ouvrir le portail".into(), yaw: 0.0, pitch: 0.0 })
+        .add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(Window { title: "WanderDesk — 3D Desktop World".into(), resolution: (1440.0_f32, 900.0_f32).into(), ..default() }), ..default() }))
+        .add_plugins(EguiPlugin)
+        .add_systems(Startup, setup_world)
+        .add_systems(Update, (desktop_ui, player_controls, portal_interaction))
+        .run();
+}
+
+fn setup_world(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, state: Res<DesktopState>) {
+    commands.spawn((Camera3dBundle { transform: Transform::from_xyz(0.0, 1.8, 9.0).looking_at(Vec3::new(0.0, 1.5, -2.0), Vec3::Y), ..default() }, PlayerCamera));
+    commands.insert_resource(AmbientLight { color: Color::rgb(0.32, 0.48, 0.72), brightness: 0.7 });
+    commands.spawn(DirectionalLightBundle { directional_light: DirectionalLight { illuminance: 14000.0, shadows_enabled: false, ..default() }, transform: Transform::from_xyz(-5.0, 12.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y), ..default() });
+    let floor = materials.add(StandardMaterial { base_color: Color::rgb(0.018,0.035,0.065), metallic: 0.45, perceptual_roughness: 0.4, ..default() });
+    commands.spawn(PbrBundle { mesh: meshes.add(Mesh::from(shape::Plane { size: 180.0, subdivisions: 10 })), material: floor, ..default() });
+    let grid = materials.add(StandardMaterial { base_color: Color::rgb(0.0,0.36,0.52), emissive: Color::rgb(0.0,0.08,0.13), metallic: 0.6, ..default() });
+    for n in -35..=35 {
+        let p=n as f32*2.0;
+        commands.spawn(PbrBundle { mesh: meshes.add(Mesh::from(shape::Box::new(0.018,0.012,140.0))), material:grid.clone(), transform:Transform::from_xyz(p,0.012,0.0), ..default() });
+        commands.spawn(PbrBundle { mesh: meshes.add(Mesh::from(shape::Box::new(140.0,0.012,0.018))), material:grid.clone(), transform:Transform::from_xyz(0.0,0.013,p), ..default() });
+    }
+    let hub = materials.add(StandardMaterial { base_color:Color::rgb(0.035,0.075,0.13), metallic:0.82, perceptual_roughness:0.2, ..default() });
+    commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::Cylinder { radius:5.8,height:0.22,resolution:96,segments:1 })), material:hub, transform:Transform::from_xyz(0.0,0.15,-3.0), ..default() });
+    let glow = materials.add(StandardMaterial { base_color:Color::rgb(0.02,0.72,0.94), emissive:Color::rgb(0.0,0.25,0.4), metallic:0.5, ..default() });
+    for n in 0..24 { let a=n as f32*std::f32::consts::TAU/24.0; commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::Box::new(0.1,0.8,0.1))), material:glow.clone(), transform:Transform::from_xyz(a.cos()*5.3,0.5,-3.0+a.sin()*5.3), ..default() }); }
+    let colors=[Color::rgb(0.02,0.78,0.98),Color::rgb(0.58,0.24,1.0),Color::rgb(0.1,0.95,0.58),Color::rgb(1.0,0.38,0.12),Color::rgb(0.98,0.25,0.48),Color::rgb(0.95,0.8,0.18)];
+    let count=state.apps.len().clamp(6,18);
+    for i in 0..count {
+        let a=i as f32*std::f32::consts::TAU/count as f32; let p=Vec3::new(a.cos()*4.1,1.7,-3.0+a.sin()*4.1); let c=colors[i%colors.len()];
+        let frame=materials.add(StandardMaterial { base_color:c, emissive:c*0.75, metallic:0.4, perceptual_roughness:0.2, ..default() });
+        let glass=materials.add(StandardMaterial { base_color:Color::rgb(0.02,0.06,0.12), metallic:0.4, ..default() });
+        let rotation=Transform::from_translation(p).looking_at(Vec3::new(0.0,1.5,-3.0),Vec3::Y).rotation;
+        commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::Box::new(1.3,2.25,0.16))), material:frame.clone(), transform:Transform { translation:p, rotation, ..default() }, ..default() });
+        commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::Box::new(1.12,2.05,0.18))), material:glass, transform:Transform { translation:p+Vec3::new(0.0,0.0,0.02), rotation, ..default() }, ..default() });
+        commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::UVSphere { radius:0.28,sectors:24,stacks:16 })), material:frame, transform:Transform::from_translation(p+Vec3::new(0.0,0.2,0.14)), ..default() });
+        if let Some(app) = state.apps.get(i) {
+            commands.spawn(Text2dBundle { text: Text::from_section(app.name.clone(), TextStyle { font_size: 22.0, color: Color::WHITE, ..default() }), transform: Transform { translation:p+Vec3::new(0.0,-0.62,0.18), rotation, ..default() }, ..default() });
+        }
+
+    }
+    let dark=materials.add(StandardMaterial { base_color:Color::rgb(0.035,0.06,0.1), metallic:0.75, perceptual_roughness:0.28, ..default() });
+    for (x,z,h) in [(-9.0,-8.0,7.0),(9.0,-8.0,7.0),(-9.0,3.0,4.5),(9.0,3.0,4.5),(-6.5,-13.0,5.0),(6.5,-13.0,5.0)] { commands.spawn(PbrBundle { mesh:meshes.add(Mesh::from(shape::Box::new(0.8,h,0.8))), material:dark.clone(), transform:Transform::from_xyz(x,h/2.0,z), ..default() }); }
+}
+
+fn player_controls(time:Res<Time>, keys:Res<Input<KeyCode>>, mut mouse:EventReader<MouseMotion>, buttons:Res<Input<MouseButton>>, mut windows:Query<&mut Window,With<PrimaryWindow>>, mut state:ResMut<DesktopState>, mut camera:Query<&mut Transform,With<PlayerCamera>>) {
+    let Ok(mut t)=camera.get_single_mut() else{return}; if state.menu { mouse.clear(); return; }
+    if let Ok(mut w)=windows.get_single_mut() { if buttons.just_pressed(MouseButton::Left) { w.cursor.grab_mode=CursorGrabMode::Locked; w.cursor.visible=false; } if keys.just_pressed(KeyCode::Escape) { w.cursor.grab_mode=CursorGrabMode::None; w.cursor.visible=true; state.menu=true; } }
+    let mut m=Vec3::ZERO; let f=t.forward(); let r=t.right();
+    if keys.pressed(KeyCode::W)||keys.pressed(KeyCode::Z){m+=f;} if keys.pressed(KeyCode::S){m-=f;} if keys.pressed(KeyCode::A)||keys.pressed(KeyCode::Q){m-=r;} if keys.pressed(KeyCode::D){m+=r;} if keys.pressed(KeyCode::Space){m.y+=1.0;} if keys.pressed(KeyCode::ShiftLeft){m.y-=1.0;}
+    if m.length_squared()>0.0 { t.translation+=m.normalize()*(if keys.pressed(KeyCode::ControlLeft){13.0}else{6.0})*time.delta_seconds(); }
+    if buttons.pressed(MouseButton::Left) { for ev in mouse.read(){state.yaw-=ev.delta.x*0.0025;state.pitch=(state.pitch-ev.delta.y*0.0025).clamp(-1.45,1.45);} t.rotation=Quat::from_rotation_y(state.yaw)*Quat::from_rotation_x(state.pitch); } else { mouse.clear(); }
+}
+
+fn portal_interaction(keys:Res<Input<KeyCode>>,mut state:ResMut<DesktopState>,camera:Query<&Transform,With<PlayerCamera>>) {
+    if !keys.just_pressed(KeyCode::E){return} let Ok(t)=camera.get_single() else{return};
+    let count=state.apps.len().clamp(6,18); let mut nearest=None;
+    for i in 0..count { let a=i as f32*std::f32::consts::TAU/count as f32; let p=Vec3::new(a.cos()*4.1,1.7,-3.0+a.sin()*4.1); let d=t.translation.distance(p);
+        if d<3.6&&t.forward().dot((p-t.translation).normalize())>0.35&&nearest.map(|n:(f32,usize)|d<n.0).unwrap_or(true){nearest=Some((d,i));}
+    }
+    if let Some((_,i))=nearest { if let Some(app)=state.apps.get(i){state.notice=match launch_app(app){Ok(())=>format!("Lancement : {}",app.name),Err(e)=>e};} } else {state.notice="Approche-toi d'un portail et regarde-le, puis appuie sur E.".into();}
+}
+
+fn desktop_ui(mut contexts:EguiContexts,mut state:ResMut<DesktopState>,mut windows:Query<&mut Window,With<PrimaryWindow>>) {
+    let ctx=contexts.ctx_mut();
+    egui::TopBottomPanel::top("hud_top").frame(egui::Frame::none().fill(egui::Color32::from_rgba_unmultiplied(4,10,24,220))).show(ctx,|ui|{ui.horizontal(|ui|{ui.heading(egui::RichText::new("WANDERDESK // 3D WORLD").strong().color(egui::Color32::from_rgb(65,225,255)));ui.separator();ui.label(format!("{} applications",state.apps.len()));ui.separator();ui.label("ZQSD/WASD · souris · E ouvrir · Échap menu");if ui.button("HUB").clicked(){state.menu=true;}});});
+    egui::TopBottomPanel::bottom("hud_bottom").frame(egui::Frame::none().fill(egui::Color32::from_rgba_unmultiplied(4,10,24,220))).show(ctx,|ui|{ui.horizontal(|ui|{ui.label(egui::RichText::new("● GPU PBR RENDERER").color(egui::Color32::from_rgb(45,245,170)));ui.separator();ui.label(&state.notice);});});
+    if state.menu { egui::Window::new("WANDERDESK / CONTROL CENTER").default_size([540.0,570.0]).resizable(true).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui|{
+        ui.heading(egui::RichText::new("Explore ton bureau en 3D").size(25.0).color(egui::Color32::from_rgb(65,225,255)));
+        ui.label("Scène 3D native : profondeur, éclairage, matériaux métalliques, reflets PBR et portails d'applications.");ui.separator();
+        ui.horizontal(|ui|{ui.label("Vitesse");ui.add(egui::Slider::new(&mut state.settings.speed,1.0..=15.0));});
+        if ui.button("▶ ENTRER DANS LE MONDE").clicked(){state.menu=false;if let Ok(mut w)=windows.get_single_mut(){w.cursor.grab_mode=CursorGrabMode::None;w.cursor.visible=true;}}
+        if ui.button("↻ Actualiser les applications").clicked(){state.apps=discover_apps();}
+        ui.separator();ui.horizontal(|ui|{ui.label("Recherche");ui.text_edit_singleline(&mut state.search);});
+        egui::ScrollArea::vertical().max_height(290.0).show(ui,|ui|{let q=state.search.to_lowercase();let items:Vec<(usize,String)>=state.apps.iter().enumerate().filter(|(_,a)|q.is_empty()||a.name.to_lowercase().contains(&q)).map(|(i,a)|(i,a.name.clone())).collect();for (i,name) in items{ui.horizontal(|ui|{ui.label("◆");ui.label(name.clone());if ui.button("Lancer").clicked(){state.notice=match launch_app(&state.apps[i]){Ok(())=>format!("Lancement : {name}"),Err(e)=>e};}});}});
+        ui.separator();ui.label("Souris : regarder · ZQSD/WASD : marcher · Espace/Maj : monter/descendre · Ctrl : accélérer · E : lancer le portail regardé · Échap : menu");
+    });}
 }
