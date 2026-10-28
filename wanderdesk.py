@@ -161,5 +161,14 @@ class Main(QStackedWidget):
         else:self.showNormal()
         self.world.setFocus()
     def pause(self):self.showNormal();self.setCurrentWidget(self.menu)
-if __name__=='__main__':
-    app=QApplication(sys.argv);app.setStyleSheet('QWidget{background-color:#0b1325;color:#e5f7ff} QToolTip{background-color:#19334c;color:#e5f7ff;border:1px solid #41889a}');w=Main();w.setStyleSheet('QStackedWidget{background-color:#0b1325}');w.show();sys.exit(app.exec())
+def main():
+    app = QApplication(sys.argv)
+    app.setStyleSheet('QWidget{background-color:#0b1325;color:#e5f7ff} QToolTip{background-color:#19334c;color:#e5f7ff;border:1px solid #41889a}')
+    window = Main()
+    window.setStyleSheet('QStackedWidget{background-color:#0b1325}')
+    window.show()
+    return app.exec()
+
+
+if __name__ == '__main__':
+    sys.exit(main())
