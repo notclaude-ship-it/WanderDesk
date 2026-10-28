@@ -2,7 +2,7 @@ mod catalog;
 mod settings;
 
 use bevy::{
-    input::mouse::MouseMotion,
+    input::{mouse::MouseMotion, touch::Touches},
     prelude::*,
     window::{CursorGrabMode, PrimaryWindow},
 };
@@ -36,7 +36,7 @@ fn main() {
         .insert_resource(DesktopState {
             apps: discover_apps(),
             settings,
-            menu: true,
+            menu: false,
             search: String::new(),
             notice: "ZQSD/WASD : bouger · souris : regarder · E : ouvrir le portail".into(),
             yaw: 0.0,
@@ -58,7 +58,15 @@ fn main() {
         }))
         .add_plugins(EguiPlugin)
         .add_systems(Startup, setup_world)
-        .add_systems(Update, (desktop_ui, player_controls, portal_interaction))
+        .add_systems(
+            Update,
+            (
+                desktop_ui,
+                touch_controls,
+                player_controls,
+                portal_interaction,
+            ),
+        )
         .run();
 }
 
@@ -256,6 +264,70 @@ fn setup_world(
     }
 }
 
+fn touch_controls(
+    touches: Res<Touches>,
+    mut state: ResMut<DesktopState>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let Ok(mut window) = windows.get_single_mut() else {
+        return;
+    };
+    let width = window.width();
+    let height = window.height();
+
+    // A raw Bevy touch path: does not depend on egui converting taps to mouse clicks.
+    if state.menu {
+        if touches.any_just_pressed() {
+            state.menu = false;
+            window.cursor.grab_mode = CursorGrabMode::None;
+            window.cursor.visible = true;
+        }
+        state.move_stick = Vec2::ZERO;
+        state.look_stick = Vec2::ZERO;
+        state.touch_jump = false;
+        state.touch_down = false;
+        state.touch_boost = false;
+        state.touch_open = false;
+        return;
+    }
+
+    state.move_stick = Vec2::ZERO;
+    state.look_stick = Vec2::ZERO;
+    state.touch_jump = false;
+    state.touch_down = false;
+    state.touch_boost = false;
+    state.touch_open = false;
+
+    for touch in touches.iter() {
+        let start = touch.start_position();
+        let pos = touch.position();
+        let delta = pos - start;
+
+        // Action buttons live in a column at the right edge, centered vertically.
+        if start.x >= width - 112.0 && start.y >= height * 0.30 && start.y <= height * 0.70 {
+            let slot = ((start.y - (height * 0.5 - 126.0)) / 48.0).floor() as i32;
+            match slot {
+                0 => state.touch_jump = true,
+                1 => state.touch_down = true,
+                2 => state.touch_open = true,
+                3 => state.touch_boost = true,
+                4 => state.menu = true,
+                _ => {}
+            }
+            continue;
+        }
+
+        let radius = 72.0;
+        let v = Vec2::new(delta.x / radius, -delta.y / radius);
+        let v = if v.length() > 1.0 { v.normalize() } else { v };
+        if start.x < width * 0.45 {
+            state.move_stick = v;
+        } else if start.x > width * 0.55 && start.y > height * 0.45 {
+            state.look_stick = v;
+        }
+    }
+}
+
 fn player_controls(
     time: Res<Time>,
     keys: Res<Input<KeyCode>>,
@@ -373,19 +445,23 @@ fn portal_interaction(
 
 fn desktop_ui(
     mut contexts: EguiContexts,
+    keys: Res<Input<KeyCode>>,
     mut state: ResMut<DesktopState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let ctx = contexts.ctx_mut();
-    // Native egui pointer interactions also receive touch input on touchscreens.
+    if state.menu && keys.just_pressed(KeyCode::Return) {
+        state.menu = false;
+    }
+    // Touchscreen taps are also handled directly by touch_controls.
     if !state.menu {
         let screen = ctx.screen_rect();
         egui::Area::new("touch_move_stick")
             .fixed_pos(egui::pos2(24.0, screen.bottom() - 210.0))
             .show(ctx, |ui| {
                 ui.set_min_size(egui::vec2(150.0, 170.0));
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(150.0, 150.0), egui::Sense::drag());
+                let (rect, _response) =
+                    ui.allocate_exact_size(egui::vec2(150.0, 150.0), egui::Sense::hover());
                 let center = rect.center();
                 let radius = 58.0;
                 let painter = ui.painter();
@@ -399,23 +475,6 @@ fn desktop_ui(
                     radius,
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(60, 210, 245)),
                 );
-                let mut v = Vec2::ZERO;
-                if response.dragged() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let d = pos - center;
-                        let d = if d.length() > radius - 12.0 {
-                            d.normalized() * (radius - 12.0)
-                        } else {
-                            d
-                        };
-                        v = Vec2::new(d.x / (radius - 12.0), -d.y / (radius - 12.0));
-                    }
-                }
-                if response.dragged() {
-                    state.move_stick = v;
-                } else {
-                    state.move_stick = Vec2::ZERO;
-                }
                 painter.circle_filled(
                     center + egui::vec2(state.move_stick.x, -state.move_stick.y) * (radius - 12.0),
                     21.0,
@@ -435,8 +494,8 @@ fn desktop_ui(
                 screen.bottom() - 210.0,
             ))
             .show(ctx, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(150.0, 150.0), egui::Sense::drag());
+                let (rect, _response) =
+                    ui.allocate_exact_size(egui::vec2(150.0, 150.0), egui::Sense::hover());
                 let center = rect.center();
                 let radius = 58.0;
                 let painter = ui.painter();
@@ -450,19 +509,6 @@ fn desktop_ui(
                     radius,
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(175, 100, 255)),
                 );
-                if response.dragged() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let raw = pos - center;
-                        let d = if raw.length() > radius - 12.0 {
-                            raw.normalized() * (radius - 12.0)
-                        } else {
-                            raw
-                        };
-                        state.look_stick = Vec2::new(d.x / (radius - 12.0), -d.y / (radius - 12.0));
-                    }
-                } else {
-                    state.look_stick = Vec2::ZERO;
-                }
                 painter.circle_filled(
                     center + egui::vec2(state.look_stick.x, -state.look_stick.y) * (radius - 12.0),
                     21.0,
