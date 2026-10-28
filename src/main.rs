@@ -400,7 +400,7 @@ fn player_controls(
     }
     state.yaw -= state.look_stick.x * 1.8 * time.delta_seconds();
     state.pitch =
-        (state.pitch - state.look_stick.y * 1.5 * time.delta_seconds()).clamp(-1.45, 1.45);
+        (state.pitch + state.look_stick.y * 1.5 * time.delta_seconds()).clamp(-1.45, 1.45);
     t.rotation = Quat::from_rotation_y(state.yaw) * Quat::from_rotation_x(state.pitch);
 }
 
